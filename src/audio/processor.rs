@@ -2,7 +2,7 @@ use crate::audio::buffer::ProcessorBuffers;
 use crate::params::CsoundParams;
 use std::sync::Arc;
 
-use csound_dyn::{ChannelName, Csound};
+pub use csound_dyn::{ChannelName, Csound};
 use nice_plug::{params::Param, prelude::*};
 use std::path::Path;
 
