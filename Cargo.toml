@@ -1,0 +1,15 @@
+[package]
+name = "nice-plug-csound"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nice-plug = { version = "0.2.0", features = [
+    "assert_process_allocs",
+    "standalone",
+]}
+atomic_float = "1.1"
+bit_mask_ring_buf = "0.6.2"
+csound-dyn = { path = "../csound-dyn" }
+float-cmp = "0.10.0"
+nice-plug-iced = "0.2.0"
