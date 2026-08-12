@@ -13,4 +13,3 @@ bit_mask_ring_buf = "0.6.2"
 csound-dyn = { path = "../csound-dyn" }
 float-cmp = "0.10.0"
 nice-plug-iced = "0.2.0"
-quick-xml = "0.41.0"
