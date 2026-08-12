@@ -1,21 +1,46 @@
 use crate::audio::buffer::ProcessorBuffers;
 use crate::params::CsoundParams;
-use crate::utils::csd_info::{CsdSettings, parse_csd_settings};
 use std::sync::Arc;
 
 pub use csound_dyn::{ChannelName, Csound};
 use nice_plug::{params::Param, prelude::*};
 use std::path::Path;
 
-pub struct CsoundAudioProcessor {
-    csound: Csound,
-    channel_names: Vec<ChannelName>,
-    buffers: ProcessorBuffers<f64>,
-    csound_frame_size: usize,
+struct CsoundSettings {
     zero_dbfs: f32,
     inverse_zero_dbfs: f32,
-    frame_size: usize,
-    csound_settings: CsdSettings,
+    ksmps: usize,
+    out_size: usize,
+    in_size: usize,
+    channel_names: Vec<ChannelName>,
+    out_frame_size: usize,
+}
+
+impl CsoundSettings {
+    pub fn new(csound: &Csound, channel_names: &[ChannelName]) -> Self {
+        let channel_names = channel_names.to_vec();
+        let zero_dbfs = csound.get_0dbfs_unsafe() as f32;
+        let inverse_zero_dbfs = zero_dbfs.recip();
+        let out_size = csound.get_nchnls_unsafe() as usize;
+        let in_size = csound.get_nchnls_input_unsafe() as usize;
+        let ksmps = csound.get_ksmps_unsafe() as usize;
+        let out_frame_size = out_size * ksmps;
+        Self {
+            zero_dbfs,
+            inverse_zero_dbfs,
+            ksmps,
+            out_size,
+            in_size,
+            channel_names,
+            out_frame_size,
+        }
+    }
+}
+
+pub struct CsoundAudioProcessor {
+    csound: Csound,
+    buffers: ProcessorBuffers<f64>,
+    settings: CsoundSettings,
 }
 
 impl CsoundAudioProcessor {
@@ -28,25 +53,16 @@ impl CsoundAudioProcessor {
         // TODO: what if CSD file is wrong (not csd), what to do with errors?
         //  what if number of inputs/outputs is incompatible with VST-plugin
         let mut csound = init_csound(csd, sample_rate);
-        let csound_settings = parse_csd_settings(csd).unwrap_or_default();
+        let settings = CsoundSettings::new(&csound, channel_names);
         let mut buffers = ProcessorBuffers::new(8000, 0.0);
-        let ksmps = csound.get_ksmps_unsafe();
-        let frame_size = 2 * ksmps as usize;
         // can safely advance cursor as buffers are initialized with zeroes.
-        buffers.advance_output_write_cursor(frame_size);
-        let zero_dbfs = csound.get_0dbfs_unsafe() as f32;
-        let inverse_zero_dbfs = zero_dbfs.recip();
-        let channel_names = channel_names.to_vec();
+        buffers.advance_output_write_cursor(settings.out_frame_size);
+
         update_csound_params(params, &mut csound, &channel_names);
         Self {
             csound,
-            csound_settings,
+            settings,
             buffers,
-            csound_frame_size: ksmps as usize,
-            channel_names,
-            zero_dbfs,
-            inverse_zero_dbfs,
-            frame_size,
         }
     }
 
@@ -89,7 +105,8 @@ impl CsoundAudioProcessor {
 
     pub fn reset(&mut self) {
         self.buffers.reset();
-        self.buffers.advance_output_write_cursor(self.frame_size);
+        self.buffers
+            .advance_output_write_cursor(self.settings.out_frame_size);
     }
 
     // TODO: complete event handlers
@@ -146,7 +163,7 @@ impl CsoundAudioProcessor {
         block_end: usize,
     ) {
         let csound_cycle_size = self.csound_cycle_size(block_start, block_end);
-        match self.csound_settings.in_size {
+        match self.settings.in_size {
             0 => {
                 self.csound_audio_processing_no_input(csound_cycle_size);
                 self.read_daw_output_from_buffer(audio, block_start, block_end);
@@ -171,7 +188,7 @@ impl CsoundAudioProcessor {
     }
 
     pub fn update_csound_params<P: CsoundParams>(&mut self, params: &Arc<P>) {
-        update_csound_params(params, &mut self.csound, &self.channel_names);
+        update_csound_params(params, &mut self.csound, &self.settings.channel_names);
     }
 
     fn write_daw_input_to_buffer_stereo(
@@ -185,7 +202,7 @@ impl CsoundAudioProcessor {
         for index in 0..batch_size {
             outs.iter().enumerate().for_each(|(channel, out)| {
                 self.buffers.write_input(
-                    (self.zero_dbfs * out[block_start + index]) as f64,
+                    (self.settings.zero_dbfs * out[block_start + index]) as f64,
                     index * 2 + channel,
                 );
             });
@@ -213,7 +230,7 @@ impl CsoundAudioProcessor {
         for index in 0..batch_size {
             outs.iter().enumerate().for_each(|(channel, out)| {
                 self.buffers.write_input(
-                    (self.zero_dbfs * out[block_start + index]) as f64,
+                    (self.settings.zero_dbfs * out[block_start + index]) as f64,
                     index * input_size + channel,
                 );
             });
@@ -222,7 +239,7 @@ impl CsoundAudioProcessor {
                 Some(side_chain) => {
                     side_chain.iter().enumerate().for_each(|(channel, side)| {
                         self.buffers.write_input(
-                            (self.zero_dbfs * side[block_start + index]) as f64,
+                            (self.settings.zero_dbfs * side[block_start + index]) as f64,
                             index * input_size + 2 + channel,
                         );
                     });
@@ -238,7 +255,7 @@ impl CsoundAudioProcessor {
     }
 
     fn csound_cycle_size(&self, block_start: usize, block_end: usize) -> usize {
-        (block_end - block_start) / self.csound_frame_size
+        (block_end - block_start) / self.settings.ksmps
     }
 
     fn csound_audio_processing_with_input(&mut self, csound_cycle_size: usize) {
@@ -276,8 +293,8 @@ impl CsoundAudioProcessor {
         let outs = audio.as_slice();
         for index in 0..batch_size {
             outs.iter_mut().enumerate().for_each(|(channel, out)| {
-                out[block_start + index] =
-                    self.inverse_zero_dbfs * self.buffers.read_output(index * 2 + channel) as f32
+                out[block_start + index] = self.settings.inverse_zero_dbfs
+                    * self.buffers.read_output(index * 2 + channel) as f32
             });
         }
         let total_samples_size = batch_size * 2;
