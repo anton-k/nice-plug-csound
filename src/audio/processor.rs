@@ -21,8 +21,8 @@ impl CsoundSettings {
         let channel_names = channel_names.to_vec();
         let zero_dbfs = csound.get_0dbfs_unsafe() as f32;
         let inverse_zero_dbfs = zero_dbfs.recip();
-        let out_size = csound.get_nchnls_unsafe() as usize;
-        let in_size = csound.get_nchnls_input_unsafe() as usize;
+        let out_size = csound.get_channels_unsafe(false) as usize;
+        let in_size = csound.get_channels_unsafe(true) as usize;
         let ksmps = csound.get_ksmps_unsafe() as usize;
         let out_frame_size = out_size * ksmps;
         Self {
