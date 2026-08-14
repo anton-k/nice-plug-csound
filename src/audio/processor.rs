@@ -14,6 +14,7 @@ struct CsoundSettings {
     in_size: usize,
     channel_names: Vec<ChannelName>,
     out_frame_size: usize,
+    main_instr_number: Option<i32>,
 }
 
 impl CsoundSettings {
@@ -25,6 +26,7 @@ impl CsoundSettings {
         let in_size = csound.get_channels_unsafe(true) as usize;
         let ksmps = csound.get_ksmps_unsafe() as usize;
         let out_frame_size = out_size * ksmps;
+        let main_instr_number = csound.get_instr_number_unsafe("main");
         Self {
             zero_dbfs,
             inverse_zero_dbfs,
@@ -33,6 +35,7 @@ impl CsoundSettings {
             in_size,
             channel_names,
             out_frame_size,
+            main_instr_number,
         }
     }
 }
@@ -58,7 +61,7 @@ impl CsoundAudioProcessor {
         // can safely advance cursor as buffers are initialized with zeroes.
         buffers.advance_output_write_cursor(settings.out_frame_size);
 
-        update_csound_params(params, &mut csound, &channel_names);
+        update_csound_params(params, &mut csound, channel_names);
         Self {
             csound,
             settings,
@@ -113,42 +116,49 @@ impl CsoundAudioProcessor {
     fn handle_event<P>(&mut self, event: &NoteEvent<P>) {
         match event {
             NoteEvent::NoteOn {
-                timing,
+                timing: _,
                 voice_id,
                 channel,
                 note,
                 velocity,
-            } => {}
+            } => {
+                if let Some(main_instr_number) = self.settings.main_instr_number {
+                    let voice_id_num = voice_id.unwrap_or(0);
+                    let note = format!(
+                        "i {}.{} 0 -1 {} {} {} {}",
+                        main_instr_number, voice_id_num, note, velocity, channel, voice_id_num
+                    );
+                    self.csound.event_string_unsafe(&note, true);
+                }
+            }
             NoteEvent::NoteOff {
-                timing,
+                timing: _,
                 voice_id,
                 channel,
                 note,
                 velocity,
-            } => {}
+            } => {
+                if let Some(main_instr_number) = self.settings.main_instr_number {
+                    let voice_id_num = voice_id.unwrap_or(0);
+                    let note = format!(
+                        "i -{}.{} 0 0 {} {} {} {}",
+                        main_instr_number, voice_id_num, note, velocity, channel, voice_id_num
+                    );
+                    self.csound.event_string_unsafe(&note, true);
+                }
+            }
             NoteEvent::Choke {
-                timing,
+                timing: _,
                 voice_id,
-                channel,
+                channel: _,
                 note,
-            } => {}
-            NoteEvent::VoiceTerminated {
-                timing,
-                voice_id,
-                channel,
-                note,
-            } => {}
-            NoteEvent::PolyModulation {
-                timing,
-                voice_id,
-                poly_modulation_id,
-                normalized_offset,
-            } => {}
-            NoteEvent::MonoAutomation {
-                timing,
-                poly_modulation_id,
-                normalized_value,
-            } => {}
+            } => {
+                if let Some(main_instr_number) = self.settings.main_instr_number {
+                    let voice_id_num = voice_id.unwrap_or(0);
+                    let note = format!("i -{}.{} 0 0 {}", main_instr_number, voice_id_num, note);
+                    self.csound.event_string_unsafe(&note, true);
+                }
+            }
             _ => {}
         }
     }
