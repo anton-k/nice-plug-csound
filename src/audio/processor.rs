@@ -1,5 +1,6 @@
 use crate::audio::buffer::ProcessorBuffers;
 use crate::params::CsoundParams;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use csound_dyn::{ChannelName, Csound};
@@ -44,6 +45,7 @@ pub struct CsoundAudioProcessor {
     csound: Csound,
     buffers: ProcessorBuffers<f64>,
     settings: CsoundSettings,
+    init_params: HashMap<ChannelName, f32>,
 }
 
 impl CsoundAudioProcessor {
@@ -57,15 +59,26 @@ impl CsoundAudioProcessor {
         //  what if number of inputs/outputs is incompatible with VST-plugin
         let mut csound = init_csound(csd, sample_rate);
         let settings = CsoundSettings::new(&csound, channel_names);
-        let mut buffers = ProcessorBuffers::new(8000, 0.0);
+        let mut buffers = ProcessorBuffers::new(65536 * 8, 0.0);
         // can safely advance cursor as buffers are initialized with zeroes.
         buffers.advance_output_write_cursor(settings.out_frame_size);
+        let init_params: HashMap<ChannelName, f32> = channel_names
+            .iter()
+            .map(|name| {
+                if let Some(param) = params.get(name.to_str()) {
+                    (name.clone(), param.value())
+                } else {
+                    (name.clone(), 0.0)
+                }
+            })
+            .collect();
 
         update_csound_params(params, &mut csound, channel_names);
         Self {
             csound,
             settings,
             buffers,
+            init_params,
         }
     }
 
@@ -108,6 +121,7 @@ impl CsoundAudioProcessor {
 
     pub fn reset(&mut self) {
         self.buffers.reset();
+
         self.buffers
             .advance_output_write_cursor(self.settings.out_frame_size);
     }
@@ -125,8 +139,8 @@ impl CsoundAudioProcessor {
                 if let Some(main_instr_number) = self.settings.main_instr_number {
                     let voice_id_num = voice_id.unwrap_or(0);
                     let note = format!(
-                        "i {}.{} 0 -1 {} {} {} {}",
-                        main_instr_number, voice_id_num, note, velocity, channel, voice_id_num
+                        "i {}.{:05} 0 -1 {} {} {} {}",
+                        main_instr_number, note, note, velocity, channel, voice_id_num
                     );
                     self.csound.event_string_unsafe(&note, true);
                 }
@@ -140,10 +154,7 @@ impl CsoundAudioProcessor {
             } => {
                 if let Some(main_instr_number) = self.settings.main_instr_number {
                     let voice_id_num = voice_id.unwrap_or(0);
-                    let note = format!(
-                        "i -{}.{} 0 0 {} {} {} {}",
-                        main_instr_number, voice_id_num, note, velocity, channel, voice_id_num
-                    );
+                    let note = format!("i -{}.{:05} 0 0", main_instr_number, note);
                     self.csound.event_string_unsafe(&note, true);
                 }
             }
@@ -178,6 +189,11 @@ impl CsoundAudioProcessor {
                 self.csound_audio_processing_no_input(csound_cycle_size);
                 self.read_daw_output_from_buffer(audio, block_start, block_end);
             }
+            // I don't know why: Csound input channels equals to 1 when it's set to 0
+            1 => {
+                self.csound_audio_processing_no_input(csound_cycle_size);
+                self.read_daw_output_from_buffer(audio, block_start, block_end);
+            }
             2 => {
                 self.write_daw_input_to_buffer_stereo(audio, block_start, block_end);
                 self.csound_audio_processing_with_input(csound_cycle_size);
@@ -192,6 +208,7 @@ impl CsoundAudioProcessor {
                 );
                 self.csound_audio_processing_with_input(csound_cycle_size);
                 self.read_daw_output_from_buffer(audio, block_start, block_end);
+                println!("Q_4");
             }
             _ => {}
         }
@@ -237,6 +254,7 @@ impl CsoundAudioProcessor {
         };
         let batch_size = block_end - block_start;
         let outs = audio.as_slice();
+
         for index in 0..batch_size {
             outs.iter().enumerate().for_each(|(channel, out)| {
                 self.buffers.write_input(
@@ -265,7 +283,14 @@ impl CsoundAudioProcessor {
     }
 
     fn csound_cycle_size(&self, block_start: usize, block_end: usize) -> usize {
-        (block_end - block_start) / self.settings.ksmps
+        let batch_frames = block_end - block_start;
+        let available_frames = self.buffers.output_size() / self.settings.out_size;
+        let needed_frames = batch_frames.saturating_sub(available_frames);
+        if needed_frames == 0 {
+            return 0;
+        }
+        // Ceil division to get number of ksmps blocks
+        needed_frames.div_ceil(self.settings.ksmps)
     }
 
     fn csound_audio_processing_with_input(&mut self, csound_cycle_size: usize) {
@@ -285,6 +310,10 @@ impl CsoundAudioProcessor {
 
     fn csound_audio_processing_no_input(&mut self, csound_cycle_size: usize) {
         for _ in 0..csound_cycle_size {
+            // fill csound inputs from buffer
+            let spin = self.csound.get_spin_unsafe();
+            spin.fill(0.0);
+
             // perform csound
             self.csound.perform_ksmps_unsafe();
 
@@ -301,6 +330,7 @@ impl CsoundAudioProcessor {
     ) {
         let batch_size = block_end - block_start;
         let outs = audio.as_slice();
+
         for index in 0..batch_size {
             outs.iter_mut().enumerate().for_each(|(channel, out)| {
                 out[block_start + index] = self.settings.inverse_zero_dbfs
@@ -320,7 +350,7 @@ pub fn update_csound_params<P: CsoundParams>(
     channel_names.iter().for_each(|channel_name| {
         if let Some(param) = params.get(channel_name.to_str()) {
             csound
-                .set_control_channel(channel_name, param.modulated_normalized_value() as f64)
+                .set_control_channel(channel_name, param.value() as f64)
                 .ok();
         }
     });

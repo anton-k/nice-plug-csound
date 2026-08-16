@@ -29,6 +29,11 @@ impl<T: Clone + Copy> ProcessorBuffers<T> {
         (self.in_write - self.in_read) as usize
     }
 
+    #[inline(always)]
+    pub fn output_size(&self) -> usize {
+        (self.out_write - self.out_read) as usize
+    }
+
     // writes samples to input buffer by index without advancing the cursor
     #[inline(always)]
     pub fn write_input(&mut self, sample: T, index: usize) {
